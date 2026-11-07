@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="余暇 仕入れ">
+<title>余暇 仕入れ判断</title>
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+  :root { --ink:#1f2a1f; --sub:#5b665b; --line:#d9ded6; --bg:#f6f5f0; --card:#fff; --accent:#45593f; --ok:#2e7d32; --ng:#c62828; --warn:#b26a00; --frame:#2ec4b6; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system, "Hiragino Sans", sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--accent); color:#fff; padding:14px 16px; padding-top:max(14px, env(safe-area-inset-top)); font-weight:700; }
+  main { padding:16px; max-width:560px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .btn { display:block; width:100%; padding:14px; border:0; border-radius:10px; font-size:16px; font-weight:700; background:var(--accent); color:#fff; margin-top:10px; }
+  .btn.sub { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+  .btn:disabled { opacity:.5; }
+  input, select { width:100%; padding:10px; font-size:16px; border:1px solid var(--line); border-radius:8px; margin-top:4px; }
+  label { display:block; font-size:13px; color:var(--sub); margin-top:10px; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; min-width:0; }
+  .row > .btn { flex:0 0 90px; margin-top:4px; }
+  h2 { font-size:17px; margin:0 0 4px; }
+  .muted { color:var(--sub); font-size:13px; }
+  .badges { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+  .badge { padding:4px 10px; border-radius:999px; font-size:13px; font-weight:700; background:#eee; }
+  .badge.ok { background:#e3f2e3; color:var(--ok); }
+  .badge.ng { background:#fbe3e3; color:var(--ng); }
+  .badge.warn { background:#fff1dc; color:var(--warn); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:6px 0; border-bottom:1px solid var(--line); }
+  td:last-child { text-align:right; font-weight:600; }
+  .msg { font-size:14px; margin-top:8px; }
+  .hidden { display:none; }
+  .book { padding:10px 0; border-bottom:1px solid var(--line); }
+  .book:last-child { border-bottom:0; }
+  .book.go { cursor:pointer; }
+  .book .t { font-weight:700; font-size:15px; }
+  a { color:var(--accent); }
+
+  /* カメラ：枠の中にバーコードが入ったら読み取る */
+  #cam { position:relative; height:42vh; min-height:240px; background:#000; border-radius:12px; overflow:hidden; }
+  #cam video { width:100%; height:100%; object-fit:cover; display:block; }
+  #frame { position:absolute; left:10%; width:80%; top:50%; height:0; padding-bottom:28%; transform:translateY(-50%);
+    border:3px solid var(--frame); border-radius:6px; box-shadow:0 0 0 999px rgba(0,0,0,.35); transition:border-color .15s; }
+  #frame.hit { border-color:#7CFC00; }
+  #camMsg { position:absolute; left:0; right:0; bottom:10px; text-align:center; color:#fff; font-size:13px; text-shadow:0 1px 2px #000; }
+  #camStart { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  #camStart .btn { width:auto; padding:14px 22px; }
+</style>
+</head>
+<body>
+<header>余暇 仕入れ判断</header>
+<main>
+  <div class="card">
+    <div id="cam">
+      <video id="video" playsinline muted></video>
+      <div id="frame"></div>
+      <div id="camMsg">上の段のバーコード（978…）を枠に入れる</div>
+      <div id="camStart"><button class="btn" onclick="startCamera()">カメラで読み取る</button></div>
+    </div>
+    <label for="isbn">キーワード検索（バーコードが読めないとき）</label>
+    <form class="row" onsubmit="search(); return false;"><input id="isbn" type="search" enterkeyhint="search" placeholder="タイトル、著者、ISBNなど"><button class="btn">調べる</button></form>
+    <div id="status" class="msg muted"></div>
+  </div>
+
+  <div id="hits" class="card hidden"></div>
+
+  <div id="result" class="card hidden"></div>
+
+  <div id="buy" class="card hidden">
+    <h2>購入を記録する</h2>
+    <p class="muted">原価シートの「仕入れ」タブに1行追加し、仕入れ候補を「仕入れる」にします。</p>
+    <label>レシートの写真（任意。金額を読み取り、写真はドライブに保存）</label>
+    <input id="receipt" type="file" accept="image/*">
+    <div class="row">
+      <div><label>仕入れ値（税込・円）</label><input id="price" inputmode="numeric"></div>
+      <div><label>数量</label><input id="qty" inputmode="numeric" value="1"></div>
+    </div>
+    <label>仕入先</label><input id="supplier" placeholder="例：ブックオフ塩尻店">
+    <div class="row">
+      <div><label>仕入れ方法</label><select id="method"><option>せどり</option><option>BookCellar</option><option>出張買取</option><option>店頭買取</option><option>直取引</option><option>販売店</option></select></div>
+      <div><label>状態</label><select id="condition"><option>古本</option><option>新本</option></select></div>
+      <div><label>形態</label><select id="form"><option>古本</option><option>新刊</option><option>ZINE</option></select></div>
+    </div>
+    <label>備考</label><input id="note" placeholder="例：送料込み、状態良い">
+    <button class="btn" id="saveBtn" onclick="savePurchase()">購入を記録する</button>
+    <div id="buyStatus" class="msg"></div>
+  </div>
+</main>
+
+<script>
+// 原価シートのApps Script（ウェブアプリ）の窓口
+const API_URL = 'https://script.google.com/macros/s/AKfycbyB52uCuLWQgyIO3eI804dYwiE91HyA0ySFutJ8B7zphf5jVlnRxonGBss9FKxreQDS0A/exec';
+
+let current = null;
+let receiptData = '';
+const yen = v => v === '' || v == null ? '—' : '¥' + Number(v).toLocaleString();
+const $ = id => document.getElementById(id);
+
+function setStatus(t) { $('status').textContent = t; }
+
+async function api(action, arg) {
+  // text/plainで送ると、事前確認なしでApps Scriptに届く
+  const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: action, arg: arg }) });
+  const out = await res.json();
+  if (!out.ok) throw new Error(out.error);
+  return out.result;
+}
+
+// ---- カメラ ----
+let stream = null, scanning = false, lastTry = 0;
+const crop = document.createElement('canvas');
+const hints = new Map([[ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13]], [ZXing.DecodeHintType.TRY_HARDER, true]]);
+const reader = new ZXing.MultiFormatReader();
+reader.setHints(hints);
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
+  } catch (err) {
+    $('camMsg').textContent = 'カメラを使えません。ブラウザの設定でカメラを許可してください。';
+    return;
+  }
+  $('video').srcObject = stream;
+  await $('video').play();
+  $('camStart').classList.add('hidden');
+  resumeScan();
+}
+
+function resumeScan() {
+  $('frame').classList.remove('hit');
+  $('camMsg').textContent = '上の段のバーコード（978…）を枠に入れる';
+  scanning = true;
+  requestAnimationFrame(tick);
+}
+
+// 画面の枠の位置を、カメラ映像の中の位置に直して切り出す
+function frameImage() {
+  const v = $('video'), box = $('cam').getBoundingClientRect(), f = $('frame').getBoundingClientRect();
+  const scale = Math.max(box.width / v.videoWidth, box.height / v.videoHeight);
+  const ox = (box.width - v.videoWidth * scale) / 2, oy = (box.height - v.videoHeight * scale) / 2;
+  const sx = (f.left - box.left - ox) / scale, sy = (f.top - box.top - oy) / scale;
+  const sw = f.width / scale, sh = f.height / scale;
+  const s = Math.min(1, 1000 / sw);
+  crop.width = Math.round(sw * s); crop.height = Math.round(sh * s);
+  crop.getContext('2d', { willReadFrequently: true }).drawImage(v, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
+  return crop;
+}
+
+function decodeFrame() {
+  const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(frameImage())));
+  try { return reader.decodeWithState(bmp).getText(); } catch (e) { return null; } finally { reader.reset(); }
+}
+
+function tick(t) {
+  if (!scanning) return;
+  const v = $('video');
+  if (t - lastTry > 150 && v.videoWidth) {
+    lastTry = t;
+    const text = decodeFrame();
+    // 本のバーコードは2段あるので、978/979で始まるISBNのほうだけを使う
+    if (text && /^97[89]\d{10}$/.test(text)) {
+      scanning = false;
+      $('frame').classList.add('hit');
+      $('camMsg').textContent = '読み取りました：' + text;
+      lookupIsbn(text);
+      return;
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+// ---- 判定 ----
+// ISBN（10桁か13桁の数字）ならそのまま判定し、それ以外は書名・著者として探す
+function search() {
+  const q = $('isbn').value.trim();
+  if (!q) return;
+  $('isbn').blur();
+  if (/^[0-9]{9}[0-9Xx]$|^97[89][0-9]{10}$/.test(q.replace(/[-\s]/g, ''))) lookupIsbn(q.replace(/[-\s]/g, ''));
+  else searchKeyword(q);
+}
+
+async function searchKeyword(q) {
+  scanning = false;
+  setStatus('「' + q + '」を探しています…');
+  ['hits', 'result', 'buy'].forEach(id => $(id).classList.add('hidden'));
+  let books;
+  try {
+    books = await api('searchBooks', q);
+  } catch (err) {
+    setStatus('エラー：' + err.message);
+    return;
+  }
+  setStatus(books.length ? '' : '見つかりませんでした。言葉を変えて探してください。');
+  if (!books.length) return;
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  $('hits').innerHTML = '<h2>検索結果（' + books.length + '件）</h2><p class="muted" style="margin:0">調べる本を押してください。</p>' +
+    books.map(b => '<div class="book' + (b.isbn ? ' go" data-isbn="' + b.isbn : '') + '">' +
+      '<div class="t">' + esc(b.title) + '</div>' +
+      '<div class="muted">' + esc([b.author, b.publisher, b.issued].filter(Boolean).join('　')) + '</div>' +
+      '<div class="muted">' + (b.isbn ? 'ISBN ' + b.isbn : 'ISBNがないため相場を調べられません') + '</div></div>').join('');
+  $('hits').querySelectorAll('.book.go').forEach(el => el.onclick = () => lookupIsbn(el.dataset.isbn));
+  $('hits').classList.remove('hidden');
+}
+
+async function lookupIsbn(isbn) {
+  $('isbn').value = isbn;
+  scanning = false;
+  setStatus('相場を調べています…（10秒ほどかかります）');
+  ['hits', 'result', 'buy'].forEach(id => $(id).classList.add('hidden'));
+  try {
+    render(await api('lookup', isbn));
+  } catch (err) {
+    setStatus('エラー：' + err.message);
+    if (stream) setTimeout(resumeScan, 1500);
+  }
+}
+
+function badge(text) {
+  const cls = /回収できる|^候補$|古本で探す|新刊で仕入れる/.test(text) ? 'ok' : /回収できない|見送り|利益が小さい/.test(text) ? 'ng' : 'warn';
+  return '<span class="badge ' + cls + '">' + text + '</span>';
+}
+
+// 過去の仕入れと在庫。どちらかがあれば目立たせる（二重に仕入れないため）
+function historyHtml(r) {
+  const p = r.purchases || [], s = (r.stock && r.stock.items) || [];
+  const stockQty = s.reduce((a, x) => a + (Number(x.quantity) || 0), 0);
+  const lines = [];
+  lines.push(stockQty ? '<b>在庫あり：' + s.map(x => x.condition + ' ' + x.quantity + '冊（' + x.price + '）').join('、') + '</b>'
+    : '在庫：なし');
+  if (r.stock && r.stock.synced) lines.push('<span class="muted">Lybramの在庫は' + r.stock.synced + '時点</span>');
+  else lines.push('<span class="muted">Lybramの在庫はまだ写していません</span>');
+  lines.push(p.length ? '<b>過去の仕入れ：' + p.length + '回</b><br>' + p.map(x => x.date + '　' + x.supplier + '　' + x.price + '×' + x.quantity).join('<br>')
+    : '過去の仕入れ：なし');
+  const warn = stockQty || p.length;
+  return '<div style="padding:10px;border-radius:8px;margin-bottom:10px;font-size:14px;line-height:1.6;background:' +
+    (warn ? '#fff1dc' : '#f3f4f1') + '">' + lines.join('<br>') + '</div>';
+}
+
+function render(r) {
+  current = r;
+  setStatus('');
+  const j = r.judge;
+  $('result').innerHTML =
+    '<h2>' + (r.title || '（書名不明）') + '</h2>' +
+    '<div class="muted">' + (r.author || '') + '　ISBN ' + r.isbn + '</div>' +
+    '<div class="badges">' + badge(j.verdict) + badge(j.plan) + badge(j.recover) + '</div>' +
+    historyHtml(r) +
+    '<div class="muted" style="margin-bottom:8px">' + j.planReason + '</div>' +
+    '<table>' +
+    '<tr><td>仕入れ上限（利益' + Math.round(r.conditions.minMargin * 100) + '%）</td><td>' + yen(j.limit) + '</td></tr>' +
+    '<tr><td>仕入れ目標（利益' + Math.round(r.conditions.targetMargin * 100) + '%）</td><td>' + yen(j.target) + '</td></tr>' +
+    '<tr><td>販売参考価格</td><td>' + yen(r.refPrice) + '</td></tr>' +
+    '<tr><td>目標で仕入れたときの利益</td><td>' + yen(j.targetProfit) + '</td></tr>' +
+    '<tr><td>メルカリで売ったときの手取り</td><td>' + yen(j.mercariNet) + '</td></tr>' +
+    '<tr><td>中古の件数（うち在庫あり）</td><td>' + r.usedCount + '件（' + r.inStockCount + '件）</td></tr>' +
+    '<tr><td>在庫ありの最安（送料込み）</td><td>' + yen(r.cheapest) + '</td></tr>' +
+    '<tr><td>中古の中央値（送料込み）</td><td>' + yen(r.median) + '</td></tr>' +
+    '<tr><td>新品価格</td><td>' + yen(r.newPrice) + '</td></tr>' +
+    '<tr><td>新刊で仕入れたときの仕入れ値（仮）</td><td>' + yen(j.newCost) + '</td></tr>' +
+    '<tr><td>新刊を定価で売ったときの利益（仮）</td><td>' + yen(j.newProfit) + '</td></tr>' +
+    '</table>' +
+    '<p class="muted">' + (r.shopUrl ? '最安：<a href="' + r.shopUrl + '" target="_blank">' + r.shop + '</a>（' + r.shopShipping + '）<br>' : '') +
+    (r.mercariUrl ? '<a href="' + r.mercariUrl + '" target="_blank">メルカリで売れた値段を見る</a>' : '') + '</p>' +
+    (r.existingRow ? '<p class="muted">仕入れ候補タブの' + r.existingRow + '行目にすでにあります。</p>'
+      : '<button class="btn sub" id="addBtn" onclick="addCandidate()">仕入れ候補に追加</button>') +
+    '<button class="btn" onclick="openBuy()">購入した</button>' +
+    '<div id="addStatus" class="msg"></div>' +
+    (stream ? '<button class="btn sub" onclick="nextBook()">次の本を読み取る</button>' : '');
+  $('result').classList.remove('hidden');
+  $('result').scrollIntoView({ behavior: 'smooth' });
+}
+
+function nextBook() {
+  ['hits', 'result', 'buy'].forEach(id => $(id).classList.add('hidden'));
+  $('isbn').value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  resumeScan();
+}
+
+async function addCandidate() {
+  $('addBtn').disabled = true;
+  try {
+    const n = await api('addCandidate', current);
+    current.existingRow = n;
+    $('addStatus').textContent = '仕入れ候補タブの' + n + '行目に追加しました。';
+    $('addBtn').remove();
+  } catch (err) {
+    $('addStatus').textContent = 'エラー：' + err.message;
+    $('addBtn').disabled = false;
+  }
+}
+
+function openBuy() {
+  receiptData = '';
+  ['price', 'supplier', 'note'].forEach(id => $(id).value = '');
+  $('qty').value = '1';
+  $('buyStatus').textContent = '';
+  $('buy').classList.remove('hidden');
+  $('buy').scrollIntoView({ behavior: 'smooth' });
+}
+
+// 送る前に写真を縮める（大きいままだと送れない）
+function shrink(file, max) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, max / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = img.width * s; cv.height = img.height * s;
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      resolve(cv.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+$('receipt').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  $('buyStatus').textContent = 'レシートを読み取っています…';
+  receiptData = await shrink(file, 1600);
+  try {
+    const r = await api('readReceipt', receiptData);
+    if (r.amount) $('price').value = r.amount;
+    $('buyStatus').textContent = r.amount ? '金額を読み取りました。数量で割る必要がないか、必ず確かめてください。' : '金額を読み取れませんでした。手で入力してください。';
+  } catch (err) {
+    $('buyStatus').textContent = '読み取りに失敗しました。手で入力してください。（' + err.message + '）';
+  }
+});
+
+async function savePurchase() {
+  const price = Number($('price').value);
+  if (!price) { $('buyStatus').textContent = '仕入れ値を入力してください。'; return; }
+  $('saveBtn').disabled = true;
+  $('buyStatus').textContent = '記録しています…';
+  try {
+    const res = await api('recordPurchase', { row: current, price: price, quantity: $('qty').value, supplier: $('supplier').value,
+      method: $('method').value, condition: $('condition').value, form: $('form').value, note: $('note').value, receipt: receiptData });
+    $('buyStatus').textContent = '記録しました（仕入れタブ' + res.purchaseRow + '行目、仕入れ候補タブ' + res.candidateRow + '行目）。';
+  } catch (err) {
+    $('buyStatus').textContent = 'エラー：' + err.message;
+  }
+  $('saveBtn').disabled = false;
+}
+</script>
+</body>
+</html>
